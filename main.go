@@ -213,48 +213,81 @@ func convertMarkdownToWord(filePath, outputDir string, progressCallback func(int
 	doc := document.New()
 	lines := strings.Split(string(content), "\n")
 
-	listLevel := 0
-	inList := false
-
-	for i, line := range lines {
-		progressCallback(int(float64(i) / float64(len(lines)) * 100))
-
-		line = strings.TrimSpace(line)
-
-		if line == "" {
-			if !inList {
-				doc.AddParagraph()
-			}
-			continue
-		}
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
 
 		if strings.HasPrefix(line, "#") {
+			// Заголовки
 			level := strings.Count(strings.Split(line, " ")[0], "#")
-			text := strings.TrimSpace(line[level:])
+			text := strings.TrimSpace(line[level+1:])
 			para := doc.AddParagraph()
-			para.Properties().SetStyle(fmt.Sprintf("Heading%d", level))
+			para.SetStyle(fmt.Sprintf("Heading%d", level))
 			run := para.AddRun()
 			run.AddText(text)
-			inList = false
 		} else if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") || strings.HasPrefix(line, "+ ") {
+			// Ненумерованные списки
 			para := doc.AddParagraph()
-			para.SetStyle("ListParagraph")
-			para.SetNumberingLevel(listLevel)
+			para.SetStyle("ListBullet")
 			run := para.AddRun()
-			run.AddText(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(line, "- "), "*"), "+"))
-			inList = true
-		} else if len(line) > 0 && line[0] >= '0' && line[0] <= '9' && strings.Contains(line, ".") {
+			run.AddText(strings.TrimPrefix(line, "- "))
+		} else if len(line) > 0 && line[0] >= '0' && line[0] <= '9' && line[1] == '.' {
+			// Нумерованные списки
 			para := doc.AddParagraph()
-			para.SetStyle("ListParagraph")
-			para.SetNumberingLevel(listLevel)
+			para.SetStyle("ListNumber")
 			run := para.AddRun()
-			run.AddText(strings.TrimSpace(strings.SplitN(line, ".", 2)[1]))
-			inList = true
+			run.AddText(strings.TrimSpace(line[2:]))
+		} else if strings.HasPrefix(line, "|") {
+			// Таблицы
+			table := doc.AddTable()
+			for ; i < len(lines) && strings.HasPrefix(lines[i], "|"); i++ {
+				row := table.AddRow()
+				cells := strings.Split(lines[i], "|")
+				for _, cellText := range cells {
+					if len(cellText) > 0 {
+						cell := row.AddCell()
+						cell.AddParagraph().AddRun().AddText(strings.TrimSpace(cellText))
+					}
+				}
+			}
+			i-- // шаг назад, потому что мы инкрементируем i в цикле
+		} else if strings.HasPrefix(line, "> ") {
+			// Цитаты
+			para := doc.AddParagraph()
+			para.SetStyle("IntenseQuote")
+			run := para.AddRun()
+			run.AddText(strings.TrimPrefix(line, "> "))
 		} else {
+			// Обычный текст
 			para := doc.AddParagraph()
 			run := para.AddRun()
-			run.AddText(line)
-			inList = false
+
+			// Обработка жирного текста
+			if strings.Contains(line, "**") {
+				parts := strings.Split(line, "**")
+				for i, part := range parts {
+					if i%2 == 1 {
+						run := para.AddRun()
+						run.Properties().SetBold(true)
+						run.AddText(part)
+					} else {
+						run.AddText(part)
+					}
+				}
+			} else if strings.Contains(line, "_") {
+				// Обработка курсива
+				parts := strings.Split(line, "_")
+				for i, part := range parts {
+					if i%2 == 1 {
+						run := para.AddRun()
+						run.Properties().SetItalic(true)
+						run.AddText(part)
+					} else {
+						run.AddText(part)
+					}
+				}
+			} else {
+				run.AddText(line)
+			}
 		}
 	}
 
