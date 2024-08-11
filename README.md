@@ -12,10 +12,14 @@ This Document Converter program is written in Go and is designed to convert .doc
 2. Make sure you have Go installed on your system.
 3. Navigate to the project directory using the command line.
 4. Run the following command to compile the program:
-```bashgo build -o DocumentConverter```
+```bash go 
+build -o DocumentConverter
+```
 5. To convert a document, run the compiled executable with the input file path and the output directory as arguments. 
 For example:
-```bash./DocumentConverter input.docx /output/directory```
+```bash
+./DocumentConverter input.docx /output/directory
+```
 6. The converted Markdown file will be saved in the specified output directory.
 
 ## How to CompilePrerequisites:
@@ -23,5 +27,7 @@ Go installed on your systemSteps:
 - Download or clone the repository
 - Open a terminal and navigate to the project directory
 - Run the command:
-```bashgo build -o DocumentConverter```
+```bash go 
+build -o DocumentConverter
+```
 - The program will be compiled and you can use it to convert documents to Markdown format.
