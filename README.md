@@ -2,6 +2,8 @@
 
 This Document Converter program is written in Go and is designed to convert .docx and .xlsx documents to Markdown format while preserving text styles and formatting.
 
+![Screenshot](./screenshot.png)
+
 ## Features 
 - Converts text with styling (bold, italic) to Markdown format
 - Handles document headers and formats them as Markdown headings
