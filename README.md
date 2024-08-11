@@ -19,9 +19,9 @@ For example:
 6. The converted Markdown file will be saved in the specified output directory.
 
 ## How to CompilePrerequisites:
-- Go installed on your systemSteps:
-    - Download or clone the repository
-    - Open a terminal and navigate to the project directory
-    - Run the command:
-    ```bashgo build -o DocumentConverter```
-    - The program will be compiled and you can use it to convert documents to Markdown format.
+Go installed on your systemSteps:
+- Download or clone the repository
+- Open a terminal and navigate to the project directory
+- Run the command:
+```bashgo build -o DocumentConverter```
+- The program will be compiled and you can use it to convert documents to Markdown format.
