@@ -1,5 +1,5 @@
 
-# Markdown-Word-Excel Converter
+# Markdown-Word-Excel Converter (Pandoc)
 
 Document Converter is a Go-based application designed to convert .docx and .xlsx documents into Markdown format while preserving text styles and formatting.
 
