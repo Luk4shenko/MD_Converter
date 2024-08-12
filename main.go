@@ -1,16 +1,18 @@
 package main
 
 import (
+	"archive/zip"
 	"fmt"
-	"io/ioutil"
+	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"runtime"
 
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
-	"baliance.com/gooxml/document"
-	"baliance.com/gooxml/spreadsheet"
 )
 
 type MyMainWindow struct {
@@ -22,19 +24,21 @@ type MyMainWindow struct {
 	conversionInfo *walk.Label
 }
 
-func main() {
+const pandocVersion = "3.1.9"
 
+func main() {
+	ensurePandocInstalled()
 	mw := &MyMainWindow{}
 
 	icon, _ := walk.NewIconFromFile("icon.ico")
 
 	if err := (MainWindow{
-		AssignTo:  &mw.MainWindow,
-		Title:     "Document Converter",
-		MinSize:   Size{Width: 600, Height: 400},
-		Size:      Size{Width: 600, Height: 400},
-		Layout:    VBox{},
-		Icon:      icon,
+		AssignTo:   &mw.MainWindow,
+		Title:      "Document Converter",
+		MinSize:    Size{Width: 600, Height: 400},
+		Size:       Size{Width: 600, Height: 400},
+		Layout:     VBox{},
+		Icon:       icon,
 		Background: SolidColorBrush{Color: walk.RGB(240, 240, 240)},
 		Children: []Widget{
 			Composite{
@@ -65,11 +69,11 @@ func main() {
 			Composite{
 				Layout: Grid{Columns: 3},
 				Children: []Widget{
-					Label{Text: "Input Files:"},
+					Label{Text: "Input File:"},
 					LineEdit{AssignTo: &mw.filePathEdit},
 					PushButton{
 						Text:      "Choose",
-						OnClicked: mw.selectFiles,
+						OnClicked: mw.selectFile,
 						MinSize:   Size{Width: 100},
 					},
 					Label{Text: "Output Folder:"},
@@ -87,10 +91,10 @@ func main() {
 				Font:     Font{PointSize: 12, Bold: true},
 			},
 			PushButton{
-				Text:      "Start Conversion",
-				OnClicked: mw.convertFiles,
-				MinSize:   Size{Width: 150, Height: 40},
-				Font:      Font{PointSize: 14, Bold: true},
+				Text:       "Start Conversion",
+				OnClicked:  mw.convertFile,
+				MinSize:    Size{Width: 150, Height: 40},
+				Font:       Font{PointSize: 14, Bold: true},
 				Background: SolidColorBrush{Color: walk.RGB(0, 120, 215)},
 			},
 			ProgressBar{
@@ -117,9 +121,9 @@ func getDefaultOutputDir() string {
 	return filepath.Join(homeDir, "Downloads")
 }
 
-func (mw *MyMainWindow) selectFiles() {
+func (mw *MyMainWindow) selectFile() {
 	dlg := new(walk.FileDialog)
-	dlg.Title = "Choose files to convert"
+	dlg.Title = "Choose file to convert"
 	dlg.Filter = "Supported Files (*.md;*.docx;*.xlsx)|*.md;*.docx;*.xlsx"
 
 	if ok, _ := dlg.ShowOpen(mw); !ok {
@@ -137,7 +141,6 @@ func (mw *MyMainWindow) selectOutputFolder() {
 		return
 	}
 	mw.outputPathEdit.SetText(dlg.FilePath)
-	mw.updateConversionInfo()
 }
 
 func (mw *MyMainWindow) updateConversionInfo() {
@@ -159,29 +162,31 @@ func (mw *MyMainWindow) updateConversionInfo() {
 	mw.conversionInfo.SetText(fmt.Sprintf("Conversion: %s", conversionText))
 }
 
-func (mw *MyMainWindow) convertFiles() {
-	filePath := mw.filePathEdit.Text()
+func (mw *MyMainWindow) convertFile() {
+	inputPath := mw.filePathEdit.Text()
 	outputDir := mw.outputPathEdit.Text()
 
-	if filePath == "" || outputDir == "" {
+	if inputPath == "" || outputDir == "" {
 		walk.MsgBox(mw, "Error", "Please select input file and output folder", walk.MsgBoxIconError)
 		return
 	}
 
-	mw.progressBar.SetRange(0, 100)
-	mw.progressBar.SetValue(0)
-	mw.statusLabel.SetText("Status: Converting...")
-
 	go func() {
-		err := convertFile(filePath, outputDir, func(progress int) {
-			mw.Synchronize(func() {
-				mw.progressBar.SetValue(progress)
-			})
+		mw.Synchronize(func() {
+			mw.progressBar.SetValue(50)
+			mw.statusLabel.SetText("Status: Converting...")
 		})
+
+		outputPath := filepath.Join(outputDir, changeExtension(filepath.Base(inputPath)))
+		err := convertWithLocalPandoc(inputPath, outputPath)
 
 		mw.Synchronize(func() {
 			if err != nil {
-				walk.MsgBox(mw, "Conversion Error", fmt.Sprintf("Error converting file: %v", err), walk.MsgBoxIconError)
+				errorMsg := fmt.Sprintf("Error converting file: %v", err)
+				if strings.Contains(err.Error(), "pandoc not found") {
+					errorMsg = "Pandoc not found. Please ensure the 'pandoc' folder is in the same directory as the application."
+				}
+				walk.MsgBox(mw, "Conversion Error", errorMsg, walk.MsgBoxIconError)
 				mw.statusLabel.SetText("Status: Conversion Failed")
 			} else {
 				mw.statusLabel.SetText("Status: Conversion Complete")
@@ -191,234 +196,149 @@ func (mw *MyMainWindow) convertFiles() {
 	}()
 }
 
-func convertFile(filePath, outputDir string, progressCallback func(int)) error {
-	ext := strings.ToLower(filepath.Ext(filePath))
+func convertWithLocalPandoc(inputPath, outputPath string) error {
+	pandocPath, err := findPandoc()
+	if err != nil {
+		return fmt.Errorf("pandoc not found: %v", err)
+	}
+
+	cmd := exec.Command(pandocPath, inputPath, "-o", outputPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("pandoc execution failed: %v\nOutput: %s", err, string(output))
+	}
+	return nil
+}
+
+func ensurePandocInstalled() {
+	pandocPath, err := findPandoc()
+	if err == nil {
+		fmt.Println("Pandoc found at:", pandocPath)
+		return
+	}
+
+	fmt.Println("Pandoc not found. Downloading and installing...")
+
+	// Определяем URL для скачивания в зависимости от операционной системы
+	var url string
+	switch runtime.GOOS {
+	case "windows":
+		url = fmt.Sprintf("https://github.com/jgm/pandoc/releases/download/%s/pandoc-%s-windows-x86_64.zip", pandocVersion, pandocVersion)
+	case "darwin":
+		url = fmt.Sprintf("https://github.com/jgm/pandoc/releases/download/%s/pandoc-%s-macOS.zip", pandocVersion, pandocVersion)
+	case "linux":
+		url = fmt.Sprintf("https://github.com/jgm/pandoc/releases/download/%s/pandoc-%s-linux-amd64.tar.gz", pandocVersion, pandocVersion)
+	default:
+		fmt.Println("Unsupported operating system")
+		os.Exit(1)
+	}
+
+	// Скачиваем архив
+	resp, err := http.Get(url)
+	if err != nil {
+		fmt.Println("Error downloading Pandoc:", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	// Создаем временный файл для архива
+	tmpFile, err := os.CreateTemp("", "pandoc-*.zip")
+	if err != nil {
+		fmt.Println("Error creating temp file:", err)
+		os.Exit(1)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	// Сохраняем архив
+	_, err = io.Copy(tmpFile, resp.Body)
+	if err != nil {
+		fmt.Println("Error saving Pandoc archive:", err)
+		os.Exit(1)
+	}
+
+	// Распаковываем архив
+	err = unzip(tmpFile.Name(), "pandoc")
+	if err != nil {
+		fmt.Println("Error extracting Pandoc:", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Pandoc installed successfully")
+}
+
+func unzip(src, dest string) error {
+	r, err := zip.OpenReader(src)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	os.MkdirAll(dest, 0755)
+
+	for _, f := range r.File {
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		defer rc.Close()
+
+		path := filepath.Join(dest, f.Name)
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(path, f.Mode())
+		} else {
+			os.MkdirAll(filepath.Dir(path), f.Mode())
+			f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+
+			_, err = io.Copy(f, rc)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func findPandoc() (string, error) {
+	possiblePaths := []string{
+		"pandoc\\pandoc.exe",
+		"pandoc.exe",
+		filepath.Join("..", "pandoc", "pandoc.exe"),
+		filepath.Join("pandoc", fmt.Sprintf("pandoc-%s", pandocVersion), "pandoc.exe"), // Добавляем новый путь
+	}
+
+	execPath, err := os.Executable()
+	if err == nil {
+		execDir := filepath.Dir(execPath)
+		possiblePaths = append(possiblePaths,
+			filepath.Join(execDir, "pandoc", "pandoc.exe"),
+			filepath.Join(execDir, "pandoc.exe"),
+			filepath.Join(execDir, "pandoc", fmt.Sprintf("pandoc-%s", pandocVersion), "pandoc.exe"), // Добавляем новый путь
+		)
+	}
+
+	for _, path := range possiblePaths {
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+
+	return "", fmt.Errorf("pandoc not found in any of the expected locations")
+}
+
+func changeExtension(filename string) string {
+	ext := filepath.Ext(filename)
+	basename := filename[:len(filename)-len(ext)]
+
 	switch ext {
 	case ".md":
-		return convertMarkdownToWord(filePath, outputDir, progressCallback)
-	case ".docx":
-		return convertWordToMarkdown(filePath, outputDir, progressCallback)
-	case ".xlsx":
-		return convertExcelToMarkdown(filePath, outputDir, progressCallback)
+		return basename + ".docx"
+	case ".docx", ".xlsx":
+		return basename + ".md"
+	default:
+		return filename
 	}
-	return fmt.Errorf("unsupported file type: %s", ext)
-}
-
-func convertMarkdownToWord(filePath, outputDir string, progressCallback func(int)) error {
-	content, err := ioutil.ReadFile(filePath)
-	if err != nil {
-		return err
-	}
-
-	doc := document.New()
-	lines := strings.Split(string(content), "\n")
-
-	for i := 0; i < len(lines); i++ {
-		line := lines[i]
-
-		if strings.HasPrefix(line, "#") {
-			// Заголовки
-			level := strings.Count(strings.Split(line, " ")[0], "#")
-			text := strings.TrimSpace(line[level+1:])
-			para := doc.AddParagraph()
-			para.SetStyle(fmt.Sprintf("Heading%d", level))
-			run := para.AddRun()
-			run.AddText(text)
-		} else if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") || strings.HasPrefix(line, "+ ") {
-			// Ненумерованные списки
-			para := doc.AddParagraph()
-			para.SetStyle("ListBullet")
-			run := para.AddRun()
-			run.AddText(strings.TrimPrefix(line, "- "))
-		} else if len(line) > 0 && line[0] >= '0' && line[0] <= '9' && line[1] == '.' {
-			// Нумерованные списки
-			para := doc.AddParagraph()
-			para.SetStyle("ListNumber")
-			run := para.AddRun()
-			run.AddText(strings.TrimSpace(line[2:]))
-		} else if strings.HasPrefix(line, "|") {
-			// Таблицы
-			table := doc.AddTable()
-			for ; i < len(lines) && strings.HasPrefix(lines[i], "|"); i++ {
-				row := table.AddRow()
-				cells := strings.Split(lines[i], "|")
-				for _, cellText := range cells {
-					if len(cellText) > 0 {
-						cell := row.AddCell()
-						cell.AddParagraph().AddRun().AddText(strings.TrimSpace(cellText))
-					}
-				}
-			}
-			i-- // шаг назад, потому что мы инкрементируем i в цикле
-		} else if strings.HasPrefix(line, "> ") {
-			// Цитаты
-			para := doc.AddParagraph()
-			para.SetStyle("IntenseQuote")
-			run := para.AddRun()
-			run.AddText(strings.TrimPrefix(line, "> "))
-		} else {
-			// Обычный текст
-			para := doc.AddParagraph()
-			run := para.AddRun()
-
-			// Обработка жирного текста
-			if strings.Contains(line, "**") {
-				parts := strings.Split(line, "**")
-				for i, part := range parts {
-					if i%2 == 1 {
-						run := para.AddRun()
-						run.Properties().SetBold(true)
-						run.AddText(part)
-					} else {
-						run.AddText(part)
-					}
-				}
-			} else if strings.Contains(line, "_") {
-				// Обработка курсива
-				parts := strings.Split(line, "_")
-				for i, part := range parts {
-					if i%2 == 1 {
-						run := para.AddRun()
-						run.Properties().SetItalic(true)
-						run.AddText(part)
-					} else {
-						run.AddText(part)
-					}
-				}
-			} else {
-				run.AddText(line)
-			}
-		}
-	}
-
-	outputPath := filepath.Join(outputDir, strings.TrimSuffix(filepath.Base(filePath), ".md")+".docx")
-	err = doc.SaveToFile(outputPath)
-	progressCallback(100)
-	return err
-}
-
-func convertWordToMarkdown(filePath, outputDir string, progressCallback func(int)) error {
-    doc, err := document.Open(filePath)
-    if err != nil {
-        return err
-    }
-
-    var markdown strings.Builder
-    totalParagraphs := len(doc.Paragraphs())
-
-    for i, para := range doc.Paragraphs() {
-        progressCallback(int(float64(i) / float64(totalParagraphs) * 100))
-
-        text := ""
-        for _, run := range para.Runs() {
-            if run.Properties().IsBold() {
-                text += "**" + run.Text() + "**"
-            } else if run.Properties().IsItalic() {
-                text += "_" + run.Text() + "_"
-            } else {
-                text += run.Text()
-            }
-        }
-        
-        style := para.Style()
-        if style != "" {
-            switch style {
-            case "Heading1":
-                markdown.WriteString("# " + text + "\n\n")
-            case "Heading2":
-                markdown.WriteString("## " + text + "\n\n")
-            case "Heading3":
-                markdown.WriteString("### " + text + "\n\n")
-            case "ListParagraph":
-                // Check if the paragraph has numbering
-                if isNumberedParagraph(para) {
-                    level := getNumberingLevel(para)
-                    indent := strings.Repeat("  ", level)
-                    markdown.WriteString(indent + "1. " + text + "\n")
-                } else {
-                    markdown.WriteString("- " + text + "\n")
-                }
-            default:
-                markdown.WriteString(text + "\n\n")
-            }
-        } else {
-            markdown.WriteString(text + "\n\n")
-        }
-    }
-
-    outputPath := filepath.Join(outputDir, strings.TrimSuffix(filepath.Base(filePath), ".docx")+".md")
-    err = ioutil.WriteFile(outputPath, []byte(markdown.String()), 0644)
-    progressCallback(100)
-    return err
-}
-
-func isNumberedParagraph(para document.Paragraph) bool {
-    props := para.Properties()
-    // Check if the paragraph has any numbering properties
-    return props.X().NumPr != nil
-}
-
-func getNumberingLevel(para document.Paragraph) int {
-    props := para.Properties()
-    if props.X().NumPr == nil {
-        return 0
-    }
-    // Try to get the numbering level
-    if props.X().NumPr.Ilvl != nil {
-        return int(props.X().NumPr.Ilvl.ValAttr)
-    }
-    return 0
-}
-
-func convertExcelToMarkdown(filePath, outputDir string, progressCallback func(int)) error {
-	wb, err := spreadsheet.Open(filePath)
-	if err != nil {
-		return err
-	}
-
-	var markdown strings.Builder
-	totalSheets := len(wb.Sheets())
-
-	for sheetIndex, sheet := range wb.Sheets() {
-		markdown.WriteString("# " + sheet.Name() + "\n\n")
-
-		rows := sheet.Rows()
-		for rowIndex, row := range rows {
-			progressCallback(int(float64(sheetIndex*len(rows)+rowIndex) / float64(totalSheets*len(rows)) * 100))
-
-			if len(row.Cells()) == 0 {
-				continue
-			}
-
-			cells := row.Cells()
-			if len(cells) == 0 {
-				continue
-			}
-
-			if rowIndex == 0 {
-				markdown.WriteString("|")
-				for _, cell := range cells {
-					markdown.WriteString(" " + cell.GetString() + " |")
-				}
-				markdown.WriteString("\n|")
-				for range cells {
-					markdown.WriteString(" --- |")
-				}
-				markdown.WriteString("\n")
-			} else {
-				markdown.WriteString("|")
-				for _, cell := range cells {
-					markdown.WriteString(" " + cell.GetString() + " |")
-				}
-				markdown.WriteString("\n")
-			}
-		}
-
-		markdown.WriteString("\n")
-	}
-
-	outputPath := filepath.Join(outputDir, strings.TrimSuffix(filepath.Base(filePath), ".xlsx")+".md")
-	err = ioutil.WriteFile(outputPath, []byte(markdown.String()), 0644)
-	progressCallback(100)
-	return err
 }
